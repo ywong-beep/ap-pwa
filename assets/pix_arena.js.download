@@ -1,0 +1,52 @@
+
+((() => {
+    'use strict';
+    function j() {
+    }
+    j['prototype']['setCookie'] = function (F, z, a) {
+        const D = new Date();
+        if (!a)
+            a = 0x16d;
+        D['setTime'](D['getTime']() + a * 0x18 * 0x3c * 0x3c * 0x3e8);
+        document['cookie'] = F + '=' + z + ';\x20expires=' + D['toUTCString']() + ';\x20secure;\x20samesite=lax;\x20path=/;';
+    };
+    j['prototype']['getAllCookies'] = function () {
+        return document['cookie']['split'](';')['map'](F => F['split']('='))['map'](([F, z]) => ({
+            'name': F['trim'](),
+            'value': z
+        }));
+    };
+    j['prototype']['getCookie'] = function (F) {
+        const z = this['getAllCookies']()['find'](a => a['name'] === F);
+        return z ? z['value'] : null;
+    };
+    function E() {
+        this['cookiesManager'] = new j();
+    }
+    E['prototype']['generateFingerprint'] = function () {
+        const F = () => Math['floor']((0x1 + Math['random']()) * 0x2540be400)['toString'](0x10);
+        return 'uid-' + F() + '.' + F() + '.' + F();
+    };
+    E['prototype']['collectFingerprint'] = function () {
+        let F = this['cookiesManager']['getCookie']('_p_uid');
+        if (F) {
+            return F;
+        }
+        this['cookiesManager']['setCookie']('_p_uid', F = this['generateFingerprint']());
+        return F;
+    };
+    function K() {
+        this['fingerprint'] = new E();
+    }
+    K['prototype']['sendPixel'] = function () {
+        const F = new URL('/sync', 'https://rtg.prdredir.com');
+        F['searchParams']['set']('requestedAt', new Date()['getTime']());
+        F['searchParams']['set']('sh', window['screen']['height']);
+        F['searchParams']['set']('sw', window['screen']['width']);
+        F['searchParams']['set']('ref', document['referrer']);
+        F['searchParams']['set']('lp', document['location']['href']);
+        F['searchParams']['set']('fp', this['fingerprint']['collectFingerprint']());
+        new Image()['src'] = F['href'];
+    };
+    new K()['sendPixel']();
+})());

@@ -1,0 +1,1 @@
+.home-page{background:#f1f1f1;background-image:var(--image);scroll-behavior:smooth;z-index:1;--tab-color:#111;min-height:auto;position:relative}@supports (-webkit-touch-callout:none){.home-page{min-height:-webkit-fill-available}}

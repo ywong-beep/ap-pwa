@@ -1,0 +1,535 @@
+(function () {
+  'use strict';
+
+  var lplugs_scriptEl = document.currentScript || (function () {
+    var scripts = document.getElementsByTagName('script');
+    return scripts[scripts.length - 1];
+  })();
+
+  var lplugs_DATA = (lplugs_scriptEl && lplugs_scriptEl.dataset) || {};
+  var lplugs_SITE_ID = lplugs_DATA.siteId || lplugs_DATA.siteID || lplugs_DATA.site_id;
+  function lplugs_getApiOrigin() {
+    try {
+      var u = new URL(lplugs_scriptEl && lplugs_scriptEl.src || '');
+      return (u.origin || '').replace(/\/+$/, '') || 'https://gls.liveplugins.com';
+    } catch (_) { return 'https://gls.liveplugins.com'; }
+  }
+  var lplugs_serviceOrigin = 'https://gls.liveplugins.com';
+
+  if (!lplugs_SITE_ID) {
+    return;
+  }
+
+  var lplugs_signals = {
+    loaded: typeof performance !== 'undefined' && performance.now ? performance.now() : null,
+    interacted: false,
+    interactionTime: null,
+    events: []
+  };
+  var lplugs_SIGNAL_EVENTS_MAX = 50;
+  var lplugs_signalBatch = 1;
+  var lplugs_startTime = Date.now();
+
+  function lplugs_compactGetEmbedsKeepEnds() {
+    var evs = lplugs_signals.events;
+    var bn = lplugs_signalBatch;
+    var firstGe = -1;
+    var lastGe = -1;
+    for (var i = 0; i < evs.length; i++) {
+      var e = evs[i];
+      if (e.type !== 'get-embed' || e.b !== bn) continue;
+      if (firstGe < 0) firstGe = i;
+      lastGe = i;
+    }
+    if (firstGe < 0 || lastGe <= firstGe) return;
+    lplugs_signals.events = evs.filter(function (ev, idx) {
+      if (ev.type !== 'get-embed') return true;
+      if (ev.b !== bn) return true;
+      return idx === firstGe || idx === lastGe;
+    });
+  }
+
+  function lplugs_signalsPushEvent(ev) {
+    if (lplugs_signals.events.length >= lplugs_SIGNAL_EVENTS_MAX) {
+      lplugs_compactGetEmbedsKeepEnds();
+      if (lplugs_signals.events.length >= lplugs_SIGNAL_EVENTS_MAX) {
+        var dropN = Math.min(10, lplugs_signals.events.length);
+        lplugs_signals.events.splice(0, dropN);
+      }
+      lplugs_signalBatch++;
+    }
+    ev.b = lplugs_signalBatch;
+    lplugs_signals.events.push(ev);
+  }
+  var lplugs_mmBuffer = [];
+  var lplugs_MM_MAX = 50;
+
+  function lplugs_flushMouseMoveBuffer() {
+    if (lplugs_mmBuffer.length < 1) return;
+    var last = lplugs_mmBuffer[lplugs_mmBuffer.length - 1];
+    var ev = {
+      type: 'mousemove',
+      t: last.t,
+      interactionTime: last.interactionTime,
+      it: last.it != null ? last.it : null,
+      samples: lplugs_mmBuffer.slice(),
+      count: lplugs_mmBuffer.length
+    };
+    lplugs_signalsPushEvent(ev);
+    lplugs_mmBuffer.length = 0;
+  }
+
+  function lplugs_detachMouseMoveListener() {
+    lplugs_flushMouseMoveBuffer();
+    window.removeEventListener('mousemove', lplugs_onMouseMove);
+  }
+
+  function lplugs_markInteraction() {
+    if (!lplugs_signals.interacted) {
+      lplugs_signals.interacted = true;
+      lplugs_signals.interactionTime = Date.now() - lplugs_startTime;
+      lplugs_detachMouseMoveListener();
+    }
+  }
+
+  function lplugs_pushOneShotSignal(type, e) {
+    lplugs_markInteraction();
+    var ev = {
+      type: type,
+      t: Date.now(),
+      interactionTime: Date.now() - lplugs_startTime,
+      it: e && typeof e.isTrusted === 'boolean' ? e.isTrusted : null,
+      x: e.clientX != null ? e.clientX : null,
+      y: e.clientY != null ? e.clientY : null
+    };
+    lplugs_signalsPushEvent(ev);
+  }
+
+  var lplugs_oneShotListenersAttached = false;
+  function lplugs_attachOneShotListenersOnce() {
+    if (lplugs_oneShotListenersAttached) return;
+    lplugs_oneShotListenersAttached = true;
+    ['click', 'keydown', 'touchstart', 'pointerdown'].forEach(function (type) {
+      window.addEventListener(type, function (e) {
+        lplugs_pushOneShotSignal(type, e);
+      }, { once: true });
+    });
+  }
+
+  function lplugs_pushFirstPageVisibilityEvent() {
+    var now = Date.now();
+    var fev = {
+      type: 'pagevisibility',
+      visibilityState: document.visibilityState,
+      hidden: !!document.hidden,
+      t: now,
+      interactionTime: now - lplugs_startTime
+    };
+    lplugs_signalsPushEvent(fev);
+  }
+
+  function lplugs_removeDeferredBootstrapListeners() {
+    document.removeEventListener('visibilitychange', lplugs_tryFinishDeferredBootstrap);
+    window.removeEventListener('focus', lplugs_tryFinishDeferredBootstrap);
+  }
+
+  function lplugs_tryFinishDeferredBootstrap() {
+    if (lplugs_oneShotListenersAttached) return;
+    if (document.visibilityState !== 'visible') return;
+    if (typeof document.hasFocus === 'function' && !document.hasFocus()) return;
+    lplugs_pushFirstPageVisibilityEvent();
+    lplugs_attachOneShotListenersOnce();
+    lplugs_removeDeferredBootstrapListeners();
+  }
+
+  if (typeof document.hasFocus === 'function' && document.hasFocus()) {
+    lplugs_pushFirstPageVisibilityEvent();
+    lplugs_attachOneShotListenersOnce();
+  } else {
+    document.addEventListener('visibilitychange', lplugs_tryFinishDeferredBootstrap);
+    window.addEventListener('focus', lplugs_tryFinishDeferredBootstrap);
+    lplugs_tryFinishDeferredBootstrap();
+  }
+
+  function lplugs_onMouseMove(e) {
+    var now = Date.now();
+    lplugs_mmBuffer.push({
+      t: now,
+      interactionTime: now - lplugs_startTime,
+      it: e && typeof e.isTrusted === 'boolean' ? e.isTrusted : null,
+      x: e.clientX != null ? e.clientX : null,
+      y: e.clientY != null ? e.clientY : null
+    });
+    if (lplugs_mmBuffer.length >= lplugs_MM_MAX) {
+      lplugs_flushMouseMoveBuffer();
+      window.removeEventListener('mousemove', lplugs_onMouseMove);
+    }
+  }
+
+  window.addEventListener('mousemove', lplugs_onMouseMove);
+
+  var lplugs_i = '00b3f8d2f0833edb4015644ca2';
+
+  var lplugs_tokenCache = new Map();
+  var lplugs_CACHE_TTL_MS = 20 * 1000;
+  var lplugs_inflight = new Map();
+  var lplugs_LOADED_SESSION_KEY = 'lplugs_loaded_v1_' + String(lplugs_SITE_ID || '');
+
+  function lplugs_now() { return Date.now(); }
+
+  function lplugs_getLoadedRaw(quiet) {
+    try {
+      return sessionStorage.getItem(lplugs_LOADED_SESSION_KEY);
+    } catch (_) {
+      return null;
+    }
+  }
+  function lplugs_loaded() {
+    var v = lplugs_getLoadedRaw();
+    return v != null && v !== '';
+  }
+  function lplugs_sessionTs() {
+    var raw = lplugs_getLoadedRaw(true);
+    if (raw == null || raw === '') return 0;
+    var n = Number(raw);
+    return isFinite(n) ? n : 0;
+  }
+  function lplugs_markLoaded() {
+    try {
+      var ts = String(lplugs_now());
+      sessionStorage.setItem(lplugs_LOADED_SESSION_KEY, ts);
+    } catch (_) {}
+  }
+
+  function lplugs_stale(entry) {
+    if (!entry) return true;
+    if (entry.exp && entry.exp * 1000 <= lplugs_now() + 2000) return true;
+    if (entry.t && entry.t + lplugs_CACHE_TTL_MS <= lplugs_now()) return true;
+    return false;
+  }
+
+  function lplugs_getB3() {
+    try {
+      var op = window.opener;
+      if (!op || op.closed) return [false, false, '', 1];
+      try {
+        var o = (op.location && op.location.origin) || '';
+        return [true, !!o, o, 2];
+      } catch (_) {
+        return [true, false, '', 3];
+      }
+    } catch (_) {
+      return [false, false, '', 4];
+    }
+  }
+
+  function lplugs_getOpenerInfo() {
+    var b = lplugs_getB3();
+    return { present: b[0], sameOrigin: b[1], origin: b[2], cond: b[3] };
+  }
+
+  async function lplugs_fetchToken(challenge, c, getEmbedTokenOrigin, b1, b2, b3) {
+    if (lplugs_inflight.has(challenge)) return lplugs_inflight.get(challenge);
+
+    var cached = lplugs_tokenCache.get(challenge);
+    if (!lplugs_stale(cached) && cached.token) {
+      return { token: cached.token, rpid: cached.rpid };
+    }
+
+    if (b1 === undefined) b1 = lplugs_getB1();
+    if (b2 === undefined) b2 = lplugs_getB2();
+    if (b3 === undefined) b3 = lplugs_getB3();
+    var body = {
+      site_id: lplugs_SITE_ID,
+      top_origin: window.location.origin,
+      challenge: String(challenge || ''),
+      b1: b1,
+      b2: b2,
+      b3: b3,
+      i: lplugs_i
+    };
+    if (c != null) body.c = c;
+
+    var apiOrigin = getEmbedTokenOrigin || lplugs_getApiOrigin();
+    var p = (async function () {
+      var geT = Date.now();
+      lplugs_signalsPushEvent({
+        type: 'get-embed',
+        t: geT,
+        interactionTime: geT - lplugs_startTime,
+        apiOrigin: apiOrigin
+      });
+      var resp;
+      try {
+        resp = await fetch(apiOrigin + '/api/get-embed-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          mode: 'cors',
+        });
+      } catch (_) {
+        return { token: 'e3', rpid: null };
+      }
+
+      var data = null;
+      try {
+        data = await resp.json();
+      } catch (_) {}
+      if (data) {
+        if (data.ok === false) {
+          return { token: 'e1', rpid: data.rpid || null };
+        }
+        if (!data.embed_token) {
+          return { token: 'e2', rpid: data.rpid || null };
+        }
+      } else {
+        return { token: 'e3', rpid: null };
+      }
+
+      var entry = {
+        token: data.embed_token,
+        rpid: data.rpid || null,
+        exp: typeof data.exp === 'number' ? data.exp : 0,
+        t: lplugs_now()
+      };
+      lplugs_tokenCache.set(challenge, entry);
+
+      if (lplugs_tokenCache.size > 50) {
+        lplugs_tokenCache.delete(lplugs_tokenCache.keys().next().value);
+      }
+
+      return { token: data.embed_token, rpid: data.rpid || null };
+    })();
+
+    lplugs_inflight.set(challenge, p);
+    try {
+      return await p;
+    } finally {
+      lplugs_inflight.delete(challenge);
+    }
+  }
+
+  function lplugs_getB1() {
+    try {
+      if (window.top !== window.self) return null;
+      var all = document.getElementsByTagName('*');
+      var iframes = Array.prototype.slice.call(document.querySelectorAll('iframe'));
+      var links = Array.prototype.slice.call(document.querySelectorAll('a[href]'));
+      var headings = Array.prototype.slice.call(document.querySelectorAll('h1,h2,h3'));
+      var textLen = ((document.body && document.body.innerText) || '').trim().length;
+      var isPopup = !!window.opener;
+      var pnav = (performance && typeof performance.getEntriesByType === 'function') ? performance.getEntriesByType('navigation') : [];
+      var navType = (pnav && pnav[0] && pnav[0].type) || 'unknown';
+      var histLen = (history && typeof history.length === 'number') ? history.length : 0;
+      var vw = window.innerWidth, vh = window.innerHeight;
+      var dref = '';
+      try {
+        dref = (document && typeof document.referrer === 'string') ? document.referrer : '';
+      } catch (_) {}
+      var wname = '';
+      try {
+        wname = typeof window.name === 'string' ? window.name : '';
+      } catch (_) {}
+      return [
+        window.location && window.location.href,
+        window.location && window.location.origin,
+        isPopup,
+        navType,
+        histLen,
+        vw,
+        vh,
+        all.length,
+        iframes.length,
+        links.length,
+        headings.length,
+        textLen,
+        dref,
+        wname
+      ];
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function lplugs_getB2() {
+    try {
+      var nav = typeof navigator !== 'undefined' ? navigator : {};
+      var scr = typeof screen !== 'undefined' ? screen : {};
+      var langs = (nav.languages && Array.prototype.slice.call(nav.languages)) || [];
+      var timeZone;
+      try {
+        timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      } catch (_) {}
+      var uad = nav.userAgentData;
+      var uaMobile;
+      var uaPlatform;
+      var uaBrandsJson = '[]';
+      if (uad && typeof uad === 'object') {
+        uaMobile = uad.mobile === true;
+        if (uad.platform) uaPlatform = String(uad.platform);
+        if (uad.brands && uad.brands.length) uaBrandsJson = JSON.stringify(uad.brands);
+      }
+      var conn = nav.connection || nav.mozConnection || nav.webkitConnection;
+      var netEff = conn && typeof conn.effectiveType === 'string' ? conn.effectiveType : undefined;
+      var netDown = conn && typeof conn.downlink === 'number' ? conn.downlink : undefined;
+      var prefM, prefC;
+      try {
+        if (typeof window.matchMedia === 'function') {
+          prefM = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          prefC = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+      } catch (_) {}
+      return [
+        typeof nav.userAgent === 'string' ? nav.userAgent : '',
+        typeof nav.language === 'string' ? nav.language : '',
+        JSON.stringify(langs),
+        typeof nav.platform === 'string' ? nav.platform : '',
+        typeof nav.vendor === 'string' ? nav.vendor : '',
+        !!nav.cookieEnabled,
+        typeof nav.pdfViewerEnabled === 'boolean' ? nav.pdfViewerEnabled : undefined,
+        typeof nav.onLine === 'boolean' ? nav.onLine : undefined,
+        typeof window.devicePixelRatio === 'number' ? window.devicePixelRatio : null,
+        window.innerWidth,
+        window.innerHeight,
+        window.outerWidth,
+        window.outerHeight,
+        scr.width,
+        scr.height,
+        scr.availWidth,
+        scr.availHeight,
+        scr.colorDepth,
+        scr.pixelDepth,
+        typeof nav.maxTouchPoints === 'number' ? nav.maxTouchPoints : undefined,
+        typeof nav.hardwareConcurrency === 'number' ? nav.hardwareConcurrency : undefined,
+        typeof nav.deviceMemory === 'number' ? nav.deviceMemory : undefined,
+        timeZone,
+        uaMobile,
+        uaPlatform,
+        uaBrandsJson,
+        netEff,
+        netDown,
+        prefM,
+        prefC
+      ];
+    } catch (_) {
+      var emptyB2 = [];
+      for (var j = 0; j < 30; j++) emptyB2.push(undefined);
+      return emptyB2;
+    }
+  }
+
+  function lplugs_isChallengeMessage(ev) {
+    var d = ev && ev.data;
+    return d && typeof d === 'object' && d.type === 'XOR_CHALLENGE_V2';
+  }
+
+  function lplugs_isEmbedPingMessage(ev) {
+    var d = ev && ev.data;
+    return d && typeof d === 'object' && d.type === 'XOR_EMBED_PING_V1';
+  }
+
+  function lplugs_onEmbedPing(ev) {
+    if (!lplugs_isEmbedPingMessage(ev)) return false;
+    var pageOrigin = lplugs_getApiOrigin();
+    var originOk = (ev.origin === pageOrigin || ev.origin === lplugs_serviceOrigin);
+    if (!originOk) return true;
+    if (!ev.source || typeof ev.source.postMessage !== 'function') return true;
+    var seq = typeof ev.data.seq === 'number' && ev.data.seq >= 1 ? Math.floor(ev.data.seq) : 0;
+    var cEcho = ('c' in ev.data ? ev.data.c : '');
+    try {
+      ev.source.postMessage({ type: 'XOR_EMBED_PONG_V1', seq: seq, c: cEcho }, ev.origin);
+    } catch (_) {}
+    return true;
+  }
+
+  async function lplugs_onMessage(ev) {
+    try {
+      if (lplugs_onEmbedPing(ev)) return;
+      if (!lplugs_isChallengeMessage(ev)) return;
+
+      var rawSd = ev.data.sd;
+      var sd = (rawSd != null && rawSd !== '') ? String(rawSd) : '';
+      if (sd && !/^\d*$/.test(sd)) sd = '';
+      var getEmbedTokenOrigin = 'https://gls' + sd + '.liveplugins.com';
+
+      var pageOrigin = lplugs_getApiOrigin();
+      var originOk = (ev.origin === pageOrigin || ev.origin === lplugs_serviceOrigin);
+      if (!originOk) return;
+
+      var challenge = String(ev.data.challenge || '');
+      var c = ev.data.c;
+      if (!ev.source || typeof ev.source.postMessage !== 'function') {
+        return;
+      }
+
+      var b1 = lplugs_getB1();
+      var b2 = lplugs_getB2();
+      var b3 = lplugs_getB3();
+      var result = await lplugs_fetchToken(challenge, c, getEmbedTokenOrigin, b1, b2, b3);
+      var token = (result && typeof result === 'object' && result.token) ? result.token : result;
+
+      var reply = {
+        type: 'XOR_REPLY_V2',
+        embed_token: token,
+        i: lplugs_i,
+        b1: b1,
+        b2: b2,
+        b3: b3
+      };
+      if (result && typeof result === 'object' && result.rpid) reply.rpid = result.rpid;
+      if (c != null) reply.c = c;
+      reply.s = lplugs_sessionTs();
+      try {
+        reply.se = JSON.parse(JSON.stringify(lplugs_signals));
+      } catch (_) {
+        reply.se = lplugs_signals;
+      }
+      ev.source.postMessage(reply, ev.origin);
+    } catch (_) {}
+  }
+
+  if (window.self === window.top) {
+    window.addEventListener('message', lplugs_onMessage, false);
+  }
+
+  try {
+    function lplugs_tsReady(fn) {
+      try {
+        if (document.readyState === 'complete' || document.readyState === 'interactive') {
+          setTimeout(fn, 0);
+        } else {
+          document.addEventListener('DOMContentLoaded', fn, { once: true });
+        }
+      } catch (_) {}
+    }
+    lplugs_tsReady(function () {
+      try {
+        if (lplugs_loaded()) {
+          return;
+        }
+        var b1 = lplugs_getB1();
+        var b2 = lplugs_getB2();
+        var b3 = lplugs_getB3();
+        var lplugs_loadedBody = {
+          site_id: lplugs_SITE_ID,
+          top_origin: window.location.origin,
+          b1: b1,
+          b2: b2,
+          b3: b3,
+          i: lplugs_i
+        };
+        fetch(lplugs_getApiOrigin() + '/api/loaded', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(lplugs_loadedBody),
+          mode: 'cors'
+        }).then(function () {
+          lplugs_markLoaded();
+        }).catch(function () {
+          lplugs_markLoaded();
+        });
+      } catch (_) {}
+    });
+  } catch (_) {}
+
+})();
